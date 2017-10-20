@@ -1,5 +1,6 @@
 add_executable(https main.c)
 target_link_libraries(https mbedtls)
+include_directories(.)
 
 
 install(TARGETS https
