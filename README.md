@@ -8,11 +8,8 @@ make
 make install
 ```
 
-### compile an example 
+### compile the https demo
 ```
-cd /an/example/folder
-mkdir build
-cd build
-cmake ..
+cd build/programs/https/
 make
 ```
