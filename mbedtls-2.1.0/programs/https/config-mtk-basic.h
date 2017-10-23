@@ -31,8 +31,8 @@
 /* System support */
 #define MBEDTLS_HAVE_ASM
 #define MBEDTLS_PLATFORM_MEMORY
-#define MBEDTLS_PLATFORM_CALLOC_MACRO pvPortCalloc //mbedtls_calloc //
-#define MBEDTLS_PLATFORM_FREE_MACRO	vPortFree //mbedtls_free //
+//#define MBEDTLS_PLATFORM_CALLOC_MACRO pvPortCalloc //mbedtls_calloc //
+//#define MBEDTLS_PLATFORM_FREE_MACRO	vPortFree //mbedtls_free //
 
 
 
@@ -44,7 +44,7 @@
 #define MBEDTLS_SSL_PROTO_TLS1
 #define MBEDTLS_SSL_PROTO_TLS1_1
 #define MBEDTLS_SSL_PROTO_TLS1_2
-#define MBEDTLS_THREADING_C
+//#define MBEDTLS_THREADING_C
 #define MBEDTLS_PLATFORM_C
 
 /* mbed TLS modules */
