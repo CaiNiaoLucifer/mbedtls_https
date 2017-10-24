@@ -82,12 +82,13 @@ int main( void )
 #include <stdio.h>
 #include <netdb.h>
 #include <unistd.h> /* read, write, close */
+#include <stdlib.h> /* malloc, free*/
 
 //#define MBEDTLS_THREADING_IMPL
 //#define MBEDTLS_CONFIG_FILE "config-mtk-basic.h"
 #include "mbedtls/net.h"
 #include "mbedtls/ssl.h"
-#include "mbedtls/entropy.h"r
+#include "mbedtls/entropy.h"
 #include "mbedtls/ctr_drbg.h"
 #include "mbedtls/debug.h"
 
@@ -137,6 +138,18 @@ const char ota_server_root_cert[]=
 "ReYNnyicsbkqWletNw+vHX/bvZ8=\r\n"
 "-----END CERTIFICATE-----\r\n";
 
+#define HTTP_HEAD_SIZE	1500
+#define MIN(a,b) ( (a) < (b) ? (a) : (b) )
+
+typedef struct{
+	//运行内部参数
+	size_t content_len;
+	size_t body_processed;
+	/*header*/
+	uint8_t* phead;
+	uint16_t head_len;
+}tcpc_httpc_t;
+
 static void my_debug( void *ctx, int level,
                       const char *file, int line, const char *str )
 {
@@ -145,9 +158,120 @@ static void my_debug( void *ctx, int level,
     fflush(  (FILE *) ctx  );
 }
 
+static int tcpc_httpc_dnld_on_data(tcpc_httpc_t* httpc, uint16_t pkt_len, uint8_t* pkt_ptr)
+{
+	int ret = pkt_ptr;
+//	LOG_DEBUG("rec: %s, buf_len: %d\r\n", pkt_ptr, pkt_len);
+	//add for http header recv when the header is bigger than one packet
+	if(0 == httpc->content_len){//try to find the whole head
+		char* p;
+
+		if(NULL == httpc->phead)
+		{
+			p = strstr((char*)pkt_ptr, "\r\n\r\n");//找到头部结束位置
+			if(p){
+				httpc->phead = (uint8_t*)malloc(HTTP_HEAD_SIZE);
+				if(httpc->phead == NULL)
+					goto close_exit;
+				memcpy(httpc->phead, pkt_ptr, pkt_len);
+				httpc->head_len = (uint32_t)p - (uint32_t)pkt_ptr;
+			}
+
+			if(0 != memcmp(pkt_ptr, "HTTP/1.1 200 OK", sizeof("HTTP/1.1 200 OK")-1) &&
+			    0 != memcmp(pkt_ptr, "HTTP/1.0 200 OK", sizeof("HTTP/1.0 200 OK")-1)){
+				pkt_ptr[pkt_len] = '\0';
+				LOG_WARN("dnld:Wrong resp %s\r\n", pkt_ptr);
+				goto close_exit;
+			}
+			LOG_INFO("dnld:Resp 200 OK.\r\n");
+		}else{
+			if((httpc->head_len + pkt_len) > HTTP_HEAD_SIZE){
+				LOG_WARN("dnld:size big than header.\r\n");//todo
+				free(httpc->phead);
+				httpc->phead = NULL;
+				goto close_exit;
+			}
+			memcpy(httpc->phead + httpc->head_len, pkt_ptr, pkt_len);
+			httpc->head_len += pkt_len;
+			p = strstr((char*)httpc->phead, "\r\n\r\n");//找到头部结束位置
+			if((char *)NULL == p){
+				if(httpc->head_len >= HTTP_HEAD_SIZE){
+					LOG_WARN("dnld:Header not found.\r\n");
+					free(httpc->phead);
+					httpc->phead = NULL;
+					goto close_exit;
+				}
+				return 0;
+			}
+			pkt_ptr = httpc->phead;
+			pkt_len = httpc->head_len;
+		}
+	}
+	if(0 == httpc->content_len){//must have found the head, and try to get content_len
+		char* p;
+
+		if(0 != memcmp(pkt_ptr, "HTTP/1.1 200 OK", sizeof("HTTP/1.1 200 OK")-1)){
+			pkt_ptr[sizeof("HTTP/1.x 200 ")-1] = '\0';
+			LOG_ERROR("HTTP resps:%s", (const char*)pkt_ptr);
+			ret = -1;
+			goto err_close_exit;
+		}
+
+		LOG_INFO("Httpc:Resp 200 OK.\r\n");
+
+		if(NULL == (p = strstr((char*)pkt_ptr, "Content-Length:")) ||
+		   0 == (httpc->content_len = atoi(p + sizeof("Content-Length:")))){
+			LOG_ERROR("Content-Length err.");
+			ret = -2;
+			goto err_close_exit;
+		}
+
+		LOG_INFO("Httpc:Content-Length:%lu\r\n", httpc->content_len);
+
+		//找到头部结束位置
+		p = strstr((char*)pkt_ptr, "\r\n\r\n");
+		if(NULL == p){
+			LOG_ERROR("Header err.");
+			ret = -3;
+			goto err_close_exit;
+		}
+		p += 4;	//指向body
+
+		//打开流
+
+		pkt_len -= (p - (char*)pkt_ptr);
+		pkt_ptr = (uint8_t*)p;
+	}
+
+
+	pkt_len = MIN(pkt_len, httpc->content_len - httpc->body_processed);
+    LOG_DEBUG("==>have download :%lu\r",(httpc->body_processed * 100 / httpc->content_len));
+
+	//写入
+
+	httpc->body_processed += pkt_len;
+	if(httpc->body_processed >= httpc->content_len){
+		LOG_WARN("Httpc:Done(%ubytes).\r\n", (uint32_t)httpc->body_processed);
+		ret = 0;
+		goto close_exit;
+	}
+	return ret;
+
+err_close_exit:
+//	httpc->dnld_if->error(httpc->up_dn_ctx, (void*)httpc->last_msg);
+
+//write_err_exit:
+
+//open_err_exit:
+	LOG_ERROR("Httpc:err,exit.\r\n");
+
+close_exit:
+	return ret;
+}
+
 int main( void )
 {
-    int ret = 0, len = 0;
+    int ret = 0;
 
     /*
      * mbedtls config
@@ -299,11 +423,14 @@ int main( void )
     uint8_t buf[1540];
     uint16_t buf_len;
     uint32_t rec_len = 0;
+
+    tcpc_httpc_t httpc;
+    memset(&httpc, 0x00, sizeof(tcpc_httpc_t));
     while(1){
 
 		ret = mbedtls_ssl_read( &ssl, buf, sizeof(buf));
 		rec_len += ret;
-		LOG_DEBUG("trying to read, ret: %d, rec_len: %d\r\n", ret, rec_len);
+//		LOG_DEBUG("trying to read, ret: %d, rec_len: %d\r\n", ret, rec_len);
 		if(ret < 0){
 			if( ret == MBEDTLS_ERR_SSL_WANT_READ || ret == MBEDTLS_ERR_SSL_WANT_WRITE ){
 				buf_len = 0;
@@ -322,13 +449,19 @@ int main( void )
 		else{//recv data
 			buf[ret] = '\0';
 			buf_len = ret;
-			LOG_DEBUG("received %d\r\n", ret);
-			//server connected hook
+			ret = tcpc_httpc_dnld_on_data(&httpc, buf_len, buf);
+			if(ret == 0){
+				goto done;
+			}else if(ret < 0){
+				goto exit;
+			}
 		}
     }
 
 	return( ret );
 exit:
+	LOG_DEBUG("error byebye!");
+done:
 //	LOG_WARN("tls:connect to server failed.\n\r");
 	mbedtls_net_free( &server_fd );
 #if defined(MBEDTLS_X509_CRT_PARSE_C)
@@ -338,7 +471,7 @@ exit:
 	mbedtls_ssl_config_free( &conf );
 	mbedtls_ctr_drbg_free( &ctr_drbg );
 	mbedtls_entropy_free( &entropy );
-	LOG_DEBUG("error byebye!");
+
 
 #ifdef WIN32
     printf( "  + Press Enter to exit this program.\n" );
