@@ -87,7 +87,7 @@ int main( void )
 //#define MBEDTLS_CONFIG_FILE "config-mtk-basic.h"
 #include "mbedtls/net.h"
 #include "mbedtls/ssl.h"
-#include "mbedtls/entropy.h"
+#include "mbedtls/entropy.h"r
 #include "mbedtls/ctr_drbg.h"
 #include "mbedtls/debug.h"
 
@@ -95,15 +95,21 @@ int main( void )
 #define LOG_DEBUG printf
 #define LOG_INFO printf
 #define LOG_WARN printf
+#define LOG_ERROR printf
 
-#define MBEDTLS_DEBUG_LEVEL 5
-
+#define MBEDTLS_DEBUG_LEVEL 0
+//https://cdn.cnbj0e.fds.api.mi-img.com/miio_fw/b53ff7643c0c78cc949f7fe20c7b8d80_upd_tinymu.toiletlid.v1.bin?GalaxyAccessKeyId=5721718224520&Expires=1515580265000&Signature=MQPqgPO3XfrRZYGOP1NRkF6BXMs=
 #define SERVER_PORT 443
 //#define SERVER_NAME "cnbj0.fds.api.xiaomi.com"
 //#define SERVER_NAME "111.206.200.99"
-#define SERVER_NAME "36.250.240.133"
+#define SERVER_NAME "cdn.cnbj0e.fds.api.mi-img.com"
+//#define SERVER_NAME "36.250.240.133"
 //#define GET_REQUEST "GET / HTTP/1.0\r\n\r\n"
-#define GET_REQUEST "GET /miio_fw/17714cb00fb2cda06b8a7081f40abe18_upd_xiaomi.dev.mtk1.bin?GalaxyAccessKeyId=5721718224520&Expires=1516523408000&Signature=pqr1TAdlQFlEMb0E8HAIJXWvu2E= HTTP/1.1\r\nAccept: */*\r\n\r\n"
+#define GET_REQUEST "GET "\
+					"/miio_fw/b53ff7643c0c78cc949f7fe20c7b8d80_upd_tinymu.toiletlid.v1.bin?GalaxyAccessKeyId=5721718224520&Expires=1515580265000&Signature=MQPqgPO3XfrRZYGOP1NRkF6BXMs="\
+					" HTTP/1.1\r\n"\
+					"host: cdn.cnbj0e.fds.api.mi-img.com\r\n"\
+					"Accept: */*\r\n\r\n"
 
 const char ota_server_root_cert[]=
 "-----BEGIN CERTIFICATE-----\r\n"
@@ -141,7 +147,7 @@ static void my_debug( void *ctx, int level,
 
 int main( void )
 {
-    int ret = 0, len;
+    int ret = 0, len = 0;
 
     /*
      * mbedtls config
@@ -264,16 +270,40 @@ int main( void )
     		goto exit;
     }
 
+    LOG_DEBUG( " ***tls handshake ok***\n    [ Protocol is %s ]\n    [ Ciphersuite is %s ]\n",
+    					mbedtls_ssl_get_version( &ssl ), mbedtls_ssl_get_ciphersuite( &ssl ) );
+
+	if( ( ret = mbedtls_ssl_get_record_expansion( &ssl ) ) >= 0 )
+		LOG_DEBUG( "    [ Record expansion is %d ]\n", ret );
+	else
+		LOG_DEBUG( "    [ Record expansion is unknown (compression) ]\n" );
+
+
+	/*
+	 * 6. write
+	 */
+	char req_buf[] = GET_REQUEST;
+	LOG_INFO( " now, writing...\n\r%s\r\n", req_buf );
+	if( ( ret = mbedtls_ssl_write( &ssl, (const unsigned char *)req_buf, strlen(req_buf) ) ) < 0 )
+	{
+		LOG_ERROR("tls: write failed ,ret is -0x%x.\n\r",-ret);
+		goto exit;
+	}
+
+
     /*
-     * 6. read
+     * 7. read
      */
     //: mbedtls_ssl_read()，return n:n>=0成功读取到的数据,<0:read error
 
     uint8_t buf[1540];
     uint16_t buf_len;
+    uint32_t rec_len = 0;
     while(1){
-    		LOG_DEBUG("trying to read\r\n");
+
 		ret = mbedtls_ssl_read( &ssl, buf, sizeof(buf));
+		rec_len += ret;
+		LOG_DEBUG("trying to read, ret: %d, rec_len: %d\r\n", ret, rec_len);
 		if(ret < 0){
 			if( ret == MBEDTLS_ERR_SSL_WANT_READ || ret == MBEDTLS_ERR_SSL_WANT_WRITE ){
 				buf_len = 0;
@@ -299,7 +329,7 @@ int main( void )
 
 	return( ret );
 exit:
-	LOG_WARN("tls:connect to server failed.\n\r");
+//	LOG_WARN("tls:connect to server failed.\n\r");
 	mbedtls_net_free( &server_fd );
 #if defined(MBEDTLS_X509_CRT_PARSE_C)
 	mbedtls_x509_crt_free( &cacert );
